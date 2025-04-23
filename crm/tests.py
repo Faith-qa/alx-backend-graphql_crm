@@ -4,6 +4,10 @@ from decimal import Decimal
 from .models import Customer, Product, Order
 from .schema import schema
 from django.utils import timezone
+import json
+from django.utils import timezone
+from datetime import datetime, timedelta
+from graphene_django.utils.testing import GraphQLTestCase
 
 class GraphQLCRMTestCase(TestCase):
     def setUp(self):
@@ -211,8 +215,8 @@ class GraphQLCRMTestCase(TestCase):
                         name
                     }}
                     products {{
+                        id
                         name
-                        price
                     }}
                     totalAmount
                 }}
@@ -286,7 +290,7 @@ class GraphQLCRMTestCase(TestCase):
         """Test querying all customers"""
         query = '''
         query {
-            customers {
+            allCustomers {
                 id
                 name
                 email
@@ -296,7 +300,7 @@ class GraphQLCRMTestCase(TestCase):
         '''
         response = self.client.execute(query)
         self.assertIsNone(response.get('errors'))
-        self.assertTrue(len(response['data']['customers']) > 0)
+        self.assertTrue(len(response['data']['allCustomers']) > 0)
 
     def test_query_single_customer(self):
         """Test querying a single customer by ID"""
@@ -318,7 +322,7 @@ class GraphQLCRMTestCase(TestCase):
         """Test querying all products"""
         query = '''
         query {
-            products {
+            allProducts {
                 id
                 name
                 price
@@ -328,7 +332,7 @@ class GraphQLCRMTestCase(TestCase):
         '''
         response = self.client.execute(query)
         self.assertIsNone(response.get('errors'))
-        self.assertTrue(len(response['data']['products']) > 0)
+        self.assertTrue(len(response['data']['allProducts']) > 0)
 
     def test_query_orders(self):
         """Test querying all orders"""
@@ -341,19 +345,269 @@ class GraphQLCRMTestCase(TestCase):
 
         query = '''
         query {
-            orders {
+            allOrders {
                 id
+                totalAmount
                 customer {
                     name
                 }
                 products {
+                    id
                     name
-                    price
                 }
-                totalAmount
             }
         }
         '''
         response = self.client.execute(query)
         self.assertIsNone(response.get('errors'))
-        self.assertTrue(len(response['data']['orders']) > 0)
+        self.assertTrue(len(response['data']['allOrders']) > 0)
+
+class CRMFilterTests(GraphQLTestCase):
+    GRAPHQL_URL = '/graphql/'
+
+    def setUp(self):
+        # Create test customers
+        self.customer1 = Customer.objects.create(
+            name="John Doe",
+            email="john@example.com",
+            phone="+1234567890"
+        )
+        self.customer2 = Customer.objects.create(
+            name="Jane Smith",
+            email="jane@example.com",
+            phone="123-456-7890"
+        )
+        self.customer3 = Customer.objects.create(
+            name="Bob Johnson",
+            email="bob@example.com",
+            phone="+1987654321"
+        )
+
+        # Create test products
+        self.product1 = Product.objects.create(
+            name="Laptop",
+            price=Decimal('999.99'),
+            stock=10
+        )
+        self.product2 = Product.objects.create(
+            name="Smartphone",
+            price=Decimal('499.99'),
+            stock=20
+        )
+        self.product3 = Product.objects.create(
+            name="Tablet",
+            price=Decimal('299.99'),
+            stock=5
+        )
+
+        # Create test orders
+        self.order1 = Order.objects.create(
+            customer=self.customer1,
+            total_amount=Decimal('1499.98'),
+            order_date=timezone.now()
+        )
+        self.order1.products.add(self.product1, self.product2)
+
+        self.order2 = Order.objects.create(
+            customer=self.customer2,
+            total_amount=Decimal('799.98'),
+            order_date=timezone.now() - timedelta(days=1)
+        )
+        self.order2.products.add(self.product2, self.product3)
+
+    def test_filter_customers_by_name(self):
+        query = '''
+        query {
+            allCustomers(name: "John Doe") {
+                id
+                name
+                email
+                phone
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        customers = content['data']['allCustomers']
+        self.assertEqual(len(customers), 1)
+        self.assertEqual(customers[0]['name'], "John Doe")
+
+    def test_filter_customers_by_email(self):
+        query = '''
+        query {
+            allCustomers(email: "jane") {
+                id
+                name
+                email
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        customers = content['data']['allCustomers']
+        self.assertEqual(len(customers), 1)
+        self.assertEqual(customers[0]['email'], "jane@example.com")
+
+    def test_filter_customers_by_phone(self):
+        query = '''
+        query {
+            allCustomers(phonePattern: "+1") {
+                id
+                name
+                phone
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        customers = content['data']['allCustomers']
+        self.assertEqual(len(customers), 2)  # John and Bob have +1 numbers
+
+    def test_filter_products_by_price_range(self):
+        query = '''
+        query {
+            allProducts(priceGte: 400, priceLte: 600) {
+                id
+                name
+                price
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        products = content['data']['allProducts']
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0]['name'], "Smartphone")
+
+    def test_filter_products_by_stock(self):
+        query = '''
+        query {
+            allProducts(stockGte: 10) {
+                id
+                name
+                stock
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        products = content['data']['allProducts']
+        self.assertEqual(len(products), 2)  # Laptop and Smartphone
+
+    def test_filter_orders_by_total_amount(self):
+        query = '''
+        query {
+            allOrders(totalAmountGte: 1000) {
+                id
+                totalAmount
+                customer {
+                    name
+                }
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        orders = content['data']['allOrders']
+        self.assertEqual(len(orders), 1)  # Only order1 has total_amount >= 1000
+
+    def test_filter_orders_by_customer_name(self):
+        query = '''
+        query {
+            allOrders(customerName: "Jane") {
+                id
+                customer {
+                    name
+                }
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        orders = content['data']['allOrders']
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]['customer']['name'], "Jane Smith")
+
+    def test_filter_orders_by_product(self):
+        query = f'''
+        query {{
+            allOrders(productId: "{self.product2.id}") {{
+                id
+                products {{
+                    id
+                    name
+                }}
+            }}
+        }}
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        orders = content['data']['allOrders']
+        self.assertEqual(len(orders), 2)  # Both orders contain product2
+
+    def test_query_customers(self):
+        """Test querying all customers"""
+        query = '''
+        query {
+            allCustomers {
+                id
+                name
+                email
+                phone
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        customers = content['data']['allCustomers']
+        self.assertEqual(len(customers), 3)  # We created 3 customers in setUp
+
+    def test_query_products(self):
+        """Test querying all products"""
+        query = '''
+        query {
+            allProducts {
+                id
+                name
+                price
+                stock
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        products = content['data']['allProducts']
+        self.assertEqual(len(products), 3)  # We created 3 products in setUp
+
+    def test_query_orders(self):
+        """Test querying all orders"""
+        query = '''
+        query {
+            allOrders {
+                id
+                totalAmount
+                customer {
+                    name
+                }
+                products {
+                    id
+                    name
+                }
+            }
+        }
+        '''
+        response = self.query(query)
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        orders = content['data']['allOrders']
+        self.assertEqual(len(orders), 2)  # We created 2 orders in setUp

@@ -1,20 +1,25 @@
 import graphene
 from graphene_django import DjangoObjectType
+from graphene_django.filter import DjangoFilterConnectionField
 from django.db import transaction
 from django.core.exceptions import ValidationError
 from .models import Customer, Product, Order
+from .filters import CustomerFilter, ProductFilter, OrderFilter
 import re
 from decimal import Decimal
+import django_filters
 
 class CustomerType(DjangoObjectType):
     class Meta:
         model = Customer
         fields = ('id', 'name', 'email', 'phone', 'created_at', 'orders')
+        interfaces = (graphene.relay.Node,)
 
 class ProductType(DjangoObjectType):
     class Meta:
         model = Product
         fields = ('id', 'name', 'price', 'stock', 'created_at', 'orders')
+        interfaces = (graphene.relay.Node,)
 
     def resolve_price(self, info):
         return str(self.price)
@@ -23,6 +28,11 @@ class OrderType(DjangoObjectType):
     class Meta:
         model = Order
         fields = ('id', 'customer', 'products', 'total_amount', 'order_date', 'created_at')
+
+    products = graphene.List(ProductType)
+
+    def resolve_products(self, info):
+        return self.products.all()
 
     def resolve_total_amount(self, info):
         return str(self.total_amount)
@@ -178,44 +188,111 @@ class CreateOrder(graphene.Mutation):
             raise ValidationError(f"Error creating order: {str(e)}")
 
 class Query(graphene.ObjectType):
-    customers = graphene.List(CustomerType)
-    products = graphene.List(ProductType)
-    orders = graphene.List(OrderType)
+    all_customers = graphene.List(CustomerType, 
+                                name=graphene.String(),
+                                email=graphene.String(),
+                                phonePattern=graphene.String())
     customer = graphene.Field(CustomerType, id=graphene.ID())
+    
+    all_products = graphene.List(ProductType,
+                               name=graphene.String(),
+                               priceGte=graphene.Float(),
+                               priceLte=graphene.Float(),
+                               stockGte=graphene.Int(),
+                               stockLte=graphene.Int())
     product = graphene.Field(ProductType, id=graphene.ID())
+    
+    all_orders = graphene.List(OrderType,
+                             totalAmountGte=graphene.Float(),
+                             totalAmountLte=graphene.Float(),
+                             customerName=graphene.String(),
+                             productId=graphene.ID())
     order = graphene.Field(OrderType, id=graphene.ID())
 
-    def resolve_customers(self, info):
-        return Customer.objects.all()
-
-    def resolve_products(self, info):
-        return Product.objects.all()
-
-    def resolve_orders(self, info):
-        return Order.objects.all()
+    def resolve_all_customers(self, info, name=None, email=None, phonePattern=None):
+        queryset = Customer.objects.all()
+        if name:
+            queryset = queryset.filter(name__icontains=name)
+        if email:
+            queryset = queryset.filter(email__icontains=email)
+        if phonePattern:
+            queryset = queryset.filter(phone__startswith=phonePattern)
+        return queryset
 
     def resolve_customer(self, info, id):
-        try:
-            return Customer.objects.get(pk=id)
-        except Customer.DoesNotExist:
-            return None
+        return Customer.objects.get(pk=id)
+
+    def resolve_all_products(self, info, name=None, priceGte=None, priceLte=None, 
+                           stockGte=None, stockLte=None):
+        queryset = Product.objects.all()
+        if name:
+            queryset = queryset.filter(name__icontains=name)
+        if priceGte is not None:
+            queryset = queryset.filter(price__gte=priceGte)
+        if priceLte is not None:
+            queryset = queryset.filter(price__lte=priceLte)
+        if stockGte is not None:
+            queryset = queryset.filter(stock__gte=stockGte)
+        if stockLte is not None:
+            queryset = queryset.filter(stock__lte=stockLte)
+        return queryset
 
     def resolve_product(self, info, id):
-        try:
-            return Product.objects.get(pk=id)
-        except Product.DoesNotExist:
-            return None
+        return Product.objects.get(pk=id)
+
+    def resolve_all_orders(self, info, totalAmountGte=None, totalAmountLte=None,
+                         customerName=None, productId=None):
+        queryset = Order.objects.all()
+        if totalAmountGte is not None:
+            queryset = queryset.filter(total_amount__gte=totalAmountGte)
+        if totalAmountLte is not None:
+            queryset = queryset.filter(total_amount__lte=totalAmountLte)
+        if customerName:
+            queryset = queryset.filter(customer__name__icontains=customerName)
+        if productId:
+            queryset = queryset.filter(products__id=productId)
+        return queryset
 
     def resolve_order(self, info, id):
-        try:
-            return Order.objects.get(pk=id)
-        except Order.DoesNotExist:
-            return None
+        return Order.objects.get(pk=id)
 
 class Mutation(graphene.ObjectType):
     create_customer = CreateCustomer.Field()
     bulk_create_customers = BulkCreateCustomers.Field()
     create_product = CreateProduct.Field()
     create_order = CreateOrder.Field()
+
+class CustomerFilter(django_filters.FilterSet):
+    name = django_filters.CharFilter(lookup_expr='icontains')
+    email = django_filters.CharFilter(lookup_expr='icontains')
+    phonePattern = django_filters.CharFilter(method='filter_phone_pattern')
+
+    def filter_phone_pattern(self, queryset, name, value):
+        return queryset.filter(phone__startswith=value)
+
+    class Meta:
+        model = Customer
+        fields = ['name', 'email', 'phonePattern']
+
+class ProductFilter(django_filters.FilterSet):
+    name = django_filters.CharFilter(lookup_expr='icontains')
+    priceGte = django_filters.NumberFilter(field_name='price', lookup_expr='gte')
+    priceLte = django_filters.NumberFilter(field_name='price', lookup_expr='lte')
+    stockGte = django_filters.NumberFilter(field_name='stock', lookup_expr='gte')
+    stockLte = django_filters.NumberFilter(field_name='stock', lookup_expr='lte')
+
+    class Meta:
+        model = Product
+        fields = ['name', 'priceGte', 'priceLte', 'stockGte', 'stockLte']
+
+class OrderFilter(django_filters.FilterSet):
+    totalAmountGte = django_filters.NumberFilter(field_name='total_amount', lookup_expr='gte')
+    totalAmountLte = django_filters.NumberFilter(field_name='total_amount', lookup_expr='lte')
+    customerName = django_filters.CharFilter(field_name='customer__name', lookup_expr='icontains')
+    productId = django_filters.NumberFilter(field_name='products__id')
+
+    class Meta:
+        model = Order
+        fields = ['totalAmountGte', 'totalAmountLte', 'customerName', 'productId']
 
 schema = graphene.Schema(query=Query, mutation=Mutation) 
