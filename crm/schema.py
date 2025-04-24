@@ -8,6 +8,7 @@ from .filters import CustomerFilter, ProductFilter, OrderFilter
 import re
 from decimal import Decimal
 import django_filters
+from django.db.models import Sum
 
 class CustomerType(DjangoObjectType):
     class Meta:
@@ -208,6 +209,11 @@ class Query(graphene.ObjectType):
                              customerName=graphene.String(),
                              productId=graphene.ID())
     order = graphene.Field(OrderType, id=graphene.ID())
+    
+    # Add total statistics queries
+    total_customers = graphene.Int()
+    total_orders = graphene.Int()
+    total_revenue = graphene.Float()
 
     def resolve_all_customers(self, info, name=None, email=None, phonePattern=None):
         queryset = Customer.objects.all()
@@ -255,6 +261,16 @@ class Query(graphene.ObjectType):
 
     def resolve_order(self, info, id):
         return Order.objects.get(pk=id)
+
+    def resolve_total_customers(self, info):
+        return Customer.objects.count()
+    
+    def resolve_total_orders(self, info):
+        return Order.objects.count()
+    
+    def resolve_total_revenue(self, info):
+        result = Order.objects.aggregate(total=Sum('total_amount'))
+        return result['total'] or 0.0
 
 class Mutation(graphene.ObjectType):
     create_customer = CreateCustomer.Field()
